@@ -10,10 +10,12 @@ const state = {
   voices: [],
   voicesReady: false,
   rate: 0.8,            // global TTS rate, persisted
+  frVoiceURI: null,     // user-picked French voice (voiceURI), persisted
 };
 
 const LS_DATA_KEY = "revision.data.v2";
 const LS_RATE_KEY = "revision.rate.v1";
+const LS_FR_VOICE_KEY = "revision.frVoice.v1";
 
 // Preferred French voices, in order. Matched by substring of voice.name.
 const PREFERRED_FR_VOICES = [
@@ -42,7 +44,8 @@ async function boot() {
   }
   const savedRate = parseFloat(localStorage.getItem(LS_RATE_KEY));
   if (!Number.isNaN(savedRate) && savedRate > 0) state.rate = savedRate;
-  primeVoices();
+  state.frVoiceURI = localStorage.getItem(LS_FR_VOICE_KEY) || null;
+  primeVoices(() => render());
   render();
 }
 
@@ -52,26 +55,46 @@ function setRate(r) {
   render();
 }
 
+function setFrVoice(uri) {
+  state.frVoiceURI = uri || null;
+  if (uri) localStorage.setItem(LS_FR_VOICE_KEY, uri);
+  else localStorage.removeItem(LS_FR_VOICE_KEY);
+  render();
+}
+
 function currentDeck() {
   return state.data.decks.find(d => d.id === state.deckId) || null;
 }
 
 // ---------- Speech synthesis (TTS) ----------
-function primeVoices() {
+function primeVoices(onChange) {
   const load = () => {
     state.voices = window.speechSynthesis.getVoices();
     state.voicesReady = state.voices.length > 0;
+    if (state.voicesReady && onChange) onChange();
   };
   load();
-  if (!state.voicesReady && "onvoiceschanged" in window.speechSynthesis) {
-    window.speechSynthesis.addEventListener("voiceschanged", load, { once: true });
+  if ("onvoiceschanged" in window.speechSynthesis) {
+    // iOS Safari fires this after voices finish loading — keep listening in case the list grows
+    window.speechSynthesis.addEventListener("voiceschanged", load);
   }
+}
+
+function availableVoices(lang) {
+  const voices = state.voices.length ? state.voices : window.speechSynthesis.getVoices();
+  const prefix = (lang || "").slice(0, 2).toLowerCase();
+  return voices.filter(v => v.lang && v.lang.toLowerCase().startsWith(prefix));
 }
 
 function pickVoice(lang) {
   const voices = state.voices.length ? state.voices : window.speechSynthesis.getVoices();
   const isFr = lang && lang.toLowerCase().startsWith("fr");
   const isEn = lang && lang.toLowerCase().startsWith("en");
+  // Honour the user's explicit French voice selection
+  if (isFr && state.frVoiceURI) {
+    const chosen = voices.find(v => v.voiceURI === state.frVoiceURI);
+    if (chosen) return chosen;
+  }
   const pool = voices.filter(v => v.lang && v.lang.toLowerCase().startsWith(lang.slice(0, 2).toLowerCase()));
   if (!pool.length) return null;
   const preferred = isFr ? PREFERRED_FR_VOICES : isEn ? PREFERRED_EN_VOICES : [];
@@ -246,6 +269,48 @@ function rateLabel(r) {
   return "Fast";
 }
 
+function renderVoicePicker(host) {
+  if (!host) return;
+  const voices = availableVoices("fr");
+  if (!voices.length) {
+    host.innerHTML = `<div class="voice-row"><span class="voice-label">French voice</span><span class="voice-hint">Loading voices…</span></div>`;
+    return;
+  }
+  // Sort: fr-FR first, then others
+  voices.sort((a, b) => {
+    const aFR = a.lang === "fr-FR" ? 0 : 1;
+    const bFR = b.lang === "fr-FR" ? 0 : 1;
+    if (aFR !== bFR) return aFR - bFR;
+    return a.name.localeCompare(b.name);
+  });
+  const currentURI = state.frVoiceURI || (pickVoice("fr-FR")?.voiceURI || "");
+  const options = voices.map(v =>
+    `<option value="${escapeHtml(v.voiceURI)}" ${v.voiceURI === currentURI ? "selected" : ""}>${escapeHtml(v.name)} (${escapeHtml(v.lang)})</option>`
+  ).join("");
+  host.innerHTML = `
+    <div class="voice-row">
+      <label class="voice-label" for="voice-select">French voice</label>
+      <select id="voice-select" class="voice-select">${options}</select>
+      <button class="voice-test" data-act="test" title="Test this voice">🔊 Test</button>
+    </div>
+    <div class="voice-hint">${voices.length} French voice${voices.length === 1 ? "" : "s"} available. If none sound good, download an Enhanced voice in iOS: Settings → Accessibility → Read and Speak → Voices → French.</div>
+  `;
+  const sel = host.querySelector("#voice-select");
+  sel.addEventListener("change", () => setFrVoice(sel.value));
+  host.querySelector("[data-act='test']").addEventListener("click", () => {
+    // Temporarily use the dropdown's current value even if not saved yet
+    const tempURI = sel.value;
+    const chosen = voices.find(v => v.voiceURI === tempURI);
+    if (!chosen) return;
+    window.speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance("Bonjour, je m'appelle " + chosen.name.split(/[\s(]/)[0] + ". Ceci est ma voix.");
+    u.voice = chosen;
+    u.lang = chosen.lang;
+    u.rate = state.rate;
+    window.speechSynthesis.speak(u);
+  });
+}
+
 // ---------- Home (deck picker) ----------
 function renderHome() {
   const data = state.data;
@@ -263,12 +328,14 @@ function renderHome() {
     <div style="text-align:center; color:var(--muted); font-size:14px; margin-bottom:8px;">
       ${escapeHtml(data.subject || "")}${data.testTitle ? " · " + escapeHtml(data.testTitle) : ""}
     </div>
-    <div style="text-align:center; color:var(--muted); font-size:12px; margin-bottom:24px;">
+    <div style="text-align:center; color:var(--muted); font-size:12px; margin-bottom:12px;">
       Playback speed: <b style="color:var(--text)">${rateLabel(state.rate)}</b> · tap 🐢/🚶/🏃
     </div>
+    <div id="voice-picker" style="margin-bottom:20px;"></div>
     <div style="color:var(--muted); font-size:13px; text-transform:uppercase; letter-spacing:0.6px; margin-bottom:10px;">Choose a deck</div>
     <div class="home-grid" id="deck-grid"></div>
   `;
+  renderVoicePicker(el.querySelector("#voice-picker"));
   const grid = el.querySelector("#deck-grid");
   data.decks.forEach((deck, i) => {
     const btn = document.createElement("button");
@@ -303,22 +370,24 @@ function renderDeck() {
   const speakDesc = isAsk ? "See the cue, say the question aloud" : "Hear the question, say the answer aloud";
   const typeDesc  = isAsk ? "Type the French question" : "Type the answer in French";
   const learnDesc = isAsk ? "See each cue with the French question" : "See all Q&A, tap to hear spoken French";
-  const testDesc  = `All ${deck.cards.length} at random, no hints`;
+  const testDesc  = `All ${deck.cards.length} at random`;
+  const srOK = speechAvailable();
+  const speakTile = srOK
+    ? `<button class="home-card primary" data-act="speak"><span>🎤 <b>Speak drill</b><span class="desc">${speakDesc}</span></span><span>›</span></button>`
+    : "";
   grid.innerHTML = `
-    <button class="home-card primary" data-act="speak">
-      <span>🎤 <b>Speak drill</b><span class="desc">${speakDesc}</span></span><span>›</span>
+    ${speakTile}
+    <button class="home-card ${srOK ? "" : "primary"}" data-act="type">
+      <span>⌨️ <b>Type mode</b><span class="desc">${typeDesc}</span></span><span>›</span>
     </button>
     <button class="home-card" data-act="learn">
       <span>📖 <b>Learn</b><span class="desc">${learnDesc}</span></span><span>›</span>
-    </button>
-    <button class="home-card" data-act="type">
-      <span>⌨️ <b>Type mode</b><span class="desc">${typeDesc}</span></span><span>›</span>
     </button>
     <button class="home-card" data-act="test">
       <span>✅ <b>Test run</b><span class="desc">${testDesc}</span></span><span>›</span>
     </button>
   `;
-  grid.querySelector("[data-act='speak']").addEventListener("click", () => startDrill("speak"));
+  if (srOK) grid.querySelector("[data-act='speak']").addEventListener("click", () => startDrill("speak"));
   grid.querySelector("[data-act='type']").addEventListener("click", () => startDrill("type"));
   grid.querySelector("[data-act='test']").addEventListener("click", () => startDrill("test"));
   grid.querySelector("[data-act='learn']").addEventListener("click", () => { state.view = "learn"; render(); });

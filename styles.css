@@ -28,6 +28,14 @@ header.top button.back { background: transparent; border: 1px solid var(--surfac
 .speed-control .speed-btn.active { background: var(--accent-strong); color: white; }
 .speed-control .speed-btn:hover:not(.active) { background: var(--surface-2); }
 
+.voice-row { display: flex; gap: 8px; align-items: center; background: var(--surface); border: 1px solid var(--surface-2); border-radius: var(--radius); padding: 10px 12px; }
+.voice-label { font-size: 13px; color: var(--muted); flex-shrink: 0; }
+.voice-select { flex: 1; background: var(--surface-2); color: var(--text); border: 1px solid var(--surface-2); border-radius: 8px; padding: 8px 10px; font-size: 14px; font-family: inherit; min-width: 0; }
+.voice-select:focus { outline: none; border-color: var(--accent); }
+.voice-test { background: var(--accent-strong); color: white; border: none; border-radius: 8px; padding: 8px 12px; font-size: 13px; cursor: pointer; font-family: inherit; flex-shrink: 0; }
+.voice-test:active { opacity: 0.8; }
+.voice-hint { font-size: 12px; color: var(--muted); line-height: 1.4; margin-top: 6px; padding: 0 4px; }
+
 .home-grid { display: grid; gap: 12px; margin-top: 8px; }
 .home-card { background: var(--surface); border: 1px solid var(--surface-2); border-radius: var(--radius); padding: 20px; text-align: left; color: var(--text); font-size: 17px; font-weight: 600; cursor: pointer; display: flex; justify-content: space-between; align-items: center; transition: transform 0.08s, background 0.15s; }
 .home-card:active { transform: scale(0.99); }
