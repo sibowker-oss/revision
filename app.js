@@ -11,11 +11,13 @@ const state = {
   voicesReady: false,
   rate: 0.8,            // global TTS rate, persisted
   frVoiceURI: null,     // user-picked French voice (voiceURI), persisted
+  enVoiceURI: null,     // user-picked English voice (voiceURI), persisted
 };
 
 const LS_DATA_KEY = "revision.data.v2";
 const LS_RATE_KEY = "revision.rate.v1";
 const LS_FR_VOICE_KEY = "revision.frVoice.v1";
+const LS_EN_VOICE_KEY = "revision.enVoice.v1";
 
 // Preferred French voices, in order. Matched by substring of voice.name.
 const PREFERRED_FR_VOICES = [
@@ -45,6 +47,7 @@ async function boot() {
   const savedRate = parseFloat(localStorage.getItem(LS_RATE_KEY));
   if (!Number.isNaN(savedRate) && savedRate > 0) state.rate = savedRate;
   state.frVoiceURI = localStorage.getItem(LS_FR_VOICE_KEY) || null;
+  state.enVoiceURI = localStorage.getItem(LS_EN_VOICE_KEY) || null;
   primeVoices(() => render());
   render();
 }
@@ -55,10 +58,12 @@ function setRate(r) {
   render();
 }
 
-function setFrVoice(uri) {
-  state.frVoiceURI = uri || null;
-  if (uri) localStorage.setItem(LS_FR_VOICE_KEY, uri);
-  else localStorage.removeItem(LS_FR_VOICE_KEY);
+function setVoiceFor(langPrefix, uri) {
+  const key = langPrefix === "en" ? LS_EN_VOICE_KEY : LS_FR_VOICE_KEY;
+  if (langPrefix === "en") state.enVoiceURI = uri || null;
+  else state.frVoiceURI = uri || null;
+  if (uri) localStorage.setItem(key, uri);
+  else localStorage.removeItem(key);
   render();
 }
 
@@ -90,9 +95,13 @@ function pickVoice(lang) {
   const voices = state.voices.length ? state.voices : window.speechSynthesis.getVoices();
   const isFr = lang && lang.toLowerCase().startsWith("fr");
   const isEn = lang && lang.toLowerCase().startsWith("en");
-  // Honour the user's explicit French voice selection
+  // Honour the user's explicit voice selection for this language
   if (isFr && state.frVoiceURI) {
     const chosen = voices.find(v => v.voiceURI === state.frVoiceURI);
+    if (chosen) return chosen;
+  }
+  if (isEn && state.enVoiceURI) {
+    const chosen = voices.find(v => v.voiceURI === state.enVoiceURI);
     if (chosen) return chosen;
   }
   const pool = voices.filter(v => v.lang && v.lang.toLowerCase().startsWith(lang.slice(0, 2).toLowerCase()));
@@ -115,18 +124,6 @@ function speak(text, { rate, lang = "fr-FR" } = {}) {
   u.rate = typeof rate === "number" ? rate : state.rate;
   u.pitch = 1;
   window.speechSynthesis.speak(u);
-}
-
-// ---------- Speech recognition ----------
-function getRecognition(lang = "fr-FR") {
-  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SR) return null;
-  const r = new SR();
-  r.lang = lang;
-  r.interimResults = true;
-  r.maxAlternatives = 3;
-  r.continuous = false;
-  return r;
 }
 
 // ---------- Answer matching ----------
@@ -208,8 +205,9 @@ function startDrill(mode) {
   const deck = currentDeck();
   if (!deck) return;
   const n = deck.cards.length;
-  const order = shuffle([...Array(n).keys()]);
-  state.drill = { mode, order, idx: 0, answers: [] };
+  // Practice mode keeps the authored order; test shuffles.
+  const order = mode === "test" ? shuffle([...Array(n).keys()]) : [...Array(n).keys()];
+  state.drill = { mode, order, idx: 0, answers: [], phase: "prompt" };
   state.view = mode;
   render();
 }
@@ -231,7 +229,8 @@ function render() {
   if (view === "home") renderHome();
   else if (view === "deck") renderDeck();
   else if (view === "learn") renderLearn();
-  else if (view === "speak" || view === "type" || view === "test") renderDrill();
+  else if (view === "practice" || view === "test") renderRevealDrill();
+  else if (view === "type") renderDrill();
   else if (view === "results") renderResults();
   else if (view === "edit") renderEdit();
 }
@@ -271,44 +270,60 @@ function rateLabel(r) {
 
 function renderVoicePicker(host) {
   if (!host) return;
-  const voices = availableVoices("fr");
+  host.innerHTML = "";
+  renderVoicePickerFor(host, "fr", "French voice", "fr-FR",
+    "Bonjour, je m'appelle {name}. Ceci est ma voix.",
+    "If none sound good, download an Enhanced voice: iOS Settings → Accessibility → Read and Speak → Voices → French.");
+  renderVoicePickerFor(host, "en", "English voice", "en-GB",
+    "Hello, I'm {name}. This is what I sound like.",
+    "Used for the English cues in the Paris deck.");
+}
+
+function renderVoicePickerFor(host, langPrefix, labelText, preferredExactLang, testSentence, hint) {
+  const voices = availableVoices(langPrefix);
+  const wrap = document.createElement("div");
+  wrap.style.marginBottom = "10px";
   if (!voices.length) {
-    host.innerHTML = `<div class="voice-row"><span class="voice-label">French voice</span><span class="voice-hint">Loading voices…</span></div>`;
+    wrap.innerHTML = `<div class="voice-row"><span class="voice-label">${labelText}</span><span class="voice-hint">Loading voices…</span></div>`;
+    host.appendChild(wrap);
     return;
   }
-  // Sort: fr-FR first, then others
+  // Sort: preferred exact lang first, then the rest alphabetically
   voices.sort((a, b) => {
-    const aFR = a.lang === "fr-FR" ? 0 : 1;
-    const bFR = b.lang === "fr-FR" ? 0 : 1;
-    if (aFR !== bFR) return aFR - bFR;
+    const aP = a.lang === preferredExactLang ? 0 : 1;
+    const bP = b.lang === preferredExactLang ? 0 : 1;
+    if (aP !== bP) return aP - bP;
     return a.name.localeCompare(b.name);
   });
-  const currentURI = state.frVoiceURI || (pickVoice("fr-FR")?.voiceURI || "");
+  const currentURI = (langPrefix === "en" ? state.enVoiceURI : state.frVoiceURI)
+    || (pickVoice(preferredExactLang)?.voiceURI || "");
   const options = voices.map(v =>
     `<option value="${escapeHtml(v.voiceURI)}" ${v.voiceURI === currentURI ? "selected" : ""}>${escapeHtml(v.name)} (${escapeHtml(v.lang)})</option>`
   ).join("");
-  host.innerHTML = `
+  const selectId = `voice-select-${langPrefix}`;
+  wrap.innerHTML = `
     <div class="voice-row">
-      <label class="voice-label" for="voice-select">French voice</label>
-      <select id="voice-select" class="voice-select">${options}</select>
+      <label class="voice-label" for="${selectId}">${labelText}</label>
+      <select id="${selectId}" class="voice-select">${options}</select>
       <button class="voice-test" data-act="test" title="Test this voice">🔊 Test</button>
     </div>
-    <div class="voice-hint">${voices.length} French voice${voices.length === 1 ? "" : "s"} available. If none sound good, download an Enhanced voice in iOS: Settings → Accessibility → Read and Speak → Voices → French.</div>
+    <div class="voice-hint">${hint}</div>
   `;
-  const sel = host.querySelector("#voice-select");
-  sel.addEventListener("change", () => setFrVoice(sel.value));
-  host.querySelector("[data-act='test']").addEventListener("click", () => {
-    // Temporarily use the dropdown's current value even if not saved yet
+  const sel = wrap.querySelector("#" + selectId);
+  sel.addEventListener("change", () => setVoiceFor(langPrefix, sel.value));
+  wrap.querySelector("[data-act='test']").addEventListener("click", () => {
     const tempURI = sel.value;
     const chosen = voices.find(v => v.voiceURI === tempURI);
     if (!chosen) return;
     window.speechSynthesis.cancel();
-    const u = new SpeechSynthesisUtterance("Bonjour, je m'appelle " + chosen.name.split(/[\s(]/)[0] + ". Ceci est ma voix.");
+    const firstName = chosen.name.split(/[\s(]/)[0];
+    const u = new SpeechSynthesisUtterance(testSentence.replace("{name}", firstName));
     u.voice = chosen;
     u.lang = chosen.lang;
     u.rate = state.rate;
     window.speechSynthesis.speak(u);
   });
+  host.appendChild(wrap);
 }
 
 // ---------- Home (deck picker) ----------
@@ -367,27 +382,27 @@ function renderDeck() {
   const grid = document.createElement("div");
   grid.className = "home-grid";
   const isAsk = deck.role === "ask";
-  const speakDesc = isAsk ? "See the cue, say the question aloud" : "Hear the question, say the answer aloud";
+  const practiceDesc = isAsk
+    ? "Remember the French question, reveal to hear it"
+    : "Remember the answer, reveal to hear it";
   const typeDesc  = isAsk ? "Type the French question" : "Type the answer in French";
   const learnDesc = isAsk ? "See each cue with the French question" : "See all Q&A, tap to hear spoken French";
-  const testDesc  = `All ${deck.cards.length} at random`;
-  const srOK = speechAvailable();
-  const speakTile = srOK
-    ? `<button class="home-card primary" data-act="speak"><span>🎤 <b>Speak drill</b><span class="desc">${speakDesc}</span></span><span>›</span></button>`
-    : "";
+  const testDesc  = `All ${deck.cards.length} at random — score yourself`;
   grid.innerHTML = `
-    ${speakTile}
-    <button class="home-card ${srOK ? "" : "primary"}" data-act="type">
-      <span>⌨️ <b>Type mode</b><span class="desc">${typeDesc}</span></span><span>›</span>
+    <button class="home-card primary" data-act="practice">
+      <span>🧠 <b>Practice</b><span class="desc">${practiceDesc}</span></span><span>›</span>
     </button>
     <button class="home-card" data-act="learn">
       <span>📖 <b>Learn</b><span class="desc">${learnDesc}</span></span><span>›</span>
+    </button>
+    <button class="home-card" data-act="type">
+      <span>⌨️ <b>Type mode</b><span class="desc">${typeDesc}</span></span><span>›</span>
     </button>
     <button class="home-card" data-act="test">
       <span>✅ <b>Test run</b><span class="desc">${testDesc}</span></span><span>›</span>
     </button>
   `;
-  if (srOK) grid.querySelector("[data-act='speak']").addEventListener("click", () => startDrill("speak"));
+  grid.querySelector("[data-act='practice']").addEventListener("click", () => startDrill("practice"));
   grid.querySelector("[data-act='type']").addEventListener("click", () => startDrill("type"));
   grid.querySelector("[data-act='test']").addEventListener("click", () => startDrill("test"));
   grid.querySelector("[data-act='learn']").addEventListener("click", () => { state.view = "learn"; render(); });
@@ -429,16 +444,113 @@ function renderLearn() {
   app.appendChild(el);
 }
 
-// ---------- Drill (speak / type / test) ----------
-function renderDrill() {
+// ---------- Reveal drill (practice / test) ----------
+function renderRevealDrill() {
   const deck = currentDeck();
   if (!deck) { go("home"); return; }
-  const mode = state.drill.mode;
-  const titles = { speak: "Speak drill", type: "Type mode", test: "Test run" };
+  const d = state.drill;
+  const mode = d.mode;
+  const titles = { practice: "Practice", test: "Test run" };
+  const cardIdx = d.order[d.idx];
+  const card = deck.cards[cardIdx];
+  const total = d.order.length;
+
   const el = document.createElement("div");
   el.appendChild(topHeader(titles[mode], "deck"));
 
+  const wrap = document.createElement("div");
+  wrap.className = "drill";
+  wrap.innerHTML = `<div class="progress-bar"><div class="fill" style="width:${(d.idx / total) * 100}%"></div></div>`;
+
+  // Prompt card
+  const promptCard = document.createElement("div");
+  promptCard.className = "prompt-card";
+  const promptLangLabel = card.promptLang && !card.promptLang.startsWith("fr") ? "" : " (French)";
+  promptCard.innerHTML = `
+    <div class="label">${escapeHtml(deck.labels.prompt)} — ${d.idx + 1} of ${total}</div>
+    <div class="prompt-text">${escapeHtml(card.prompt)}</div>
+    <button class="replay" data-act="hearPrompt">🔊 Hear it${promptLangLabel}</button>
+  `;
+  promptCard.querySelector("[data-act='hearPrompt']").addEventListener("click", () => speak(card.prompt, { lang: card.promptLang || "fr-FR" }));
+  wrap.appendChild(promptCard);
+
+  if (d.phase === "prompt") {
+    // Hidden answer state — single big Reveal button
+    const hint = document.createElement("div");
+    hint.className = "reveal-hint";
+    hint.textContent = mode === "test"
+      ? "Say your answer out loud, then reveal to check."
+      : "Try to remember the answer, then reveal to hear it.";
+    wrap.appendChild(hint);
+
+    const revealBtn = document.createElement("button");
+    revealBtn.className = "reveal-btn";
+    revealBtn.innerHTML = "👁 Show answer";
+    revealBtn.addEventListener("click", () => revealCurrent());
+    wrap.appendChild(revealBtn);
+  } else {
+    // Revealed state — show answer, auto-read, offer self-rating
+    const answerCard = document.createElement("div");
+    answerCard.className = "answer-card";
+    answerCard.innerHTML = `
+      <div class="label">${escapeHtml(deck.labels.response)}</div>
+      <div class="answer-text">${escapeHtml(card.response)}</div>
+      <div class="answer-actions">
+        <button class="replay" data-act="hearA">🔊 Hear again</button>
+        <button class="replay" data-act="hearASlow">🐢 Slower</button>
+      </div>
+    `;
+    answerCard.querySelector("[data-act='hearA']").addEventListener("click", () => speak(card.response, { lang: card.responseLang || "fr-FR" }));
+    answerCard.querySelector("[data-act='hearASlow']").addEventListener("click", () => speak(card.response, { lang: card.responseLang || "fr-FR", rate: 0.5 }));
+    wrap.appendChild(answerCard);
+
+    const rateRow = document.createElement("div");
+    rateRow.className = "rate-row";
+    rateRow.innerHTML = `
+      <button class="rate-btn rate-no" data-rate="no">❌ Not yet</button>
+      <button class="rate-btn rate-almost" data-rate="almost">🤔 Almost</button>
+      <button class="rate-btn rate-got" data-rate="got">✅ Got it</button>
+    `;
+    rateRow.querySelectorAll("[data-rate]").forEach(btn => {
+      btn.addEventListener("click", () => rateCurrent(btn.dataset.rate));
+    });
+    wrap.appendChild(rateRow);
+  }
+
+  el.appendChild(wrap);
+  app.appendChild(el);
+}
+
+function revealCurrent() {
   const d = state.drill;
+  const deck = currentDeck();
+  const card = deck.cards[d.order[d.idx]];
+  d.phase = "revealed";
+  render();
+  // Auto-play the answer after a short delay so the DOM is painted first
+  setTimeout(() => speak(card.response, { lang: card.responseLang || "fr-FR" }), 150);
+}
+
+function rateCurrent(rating) {
+  const d = state.drill;
+  const cardIdx = d.order[d.idx];
+  d.answers.push({ cardIdx, rating });
+  d.idx += 1;
+  d.phase = "prompt";
+  if (d.idx >= d.order.length) {
+    state.view = "results";
+  }
+  render();
+}
+
+// ---------- Type drill (typing check against expected French) ----------
+function renderDrill() {
+  const deck = currentDeck();
+  if (!deck) { go("home"); return; }
+  const d = state.drill;
+  const el = document.createElement("div");
+  el.appendChild(topHeader("Type mode", "deck"));
+
   const cardIdx = d.order[d.idx];
   const card = deck.cards[cardIdx];
   const total = d.order.length;
@@ -450,136 +562,48 @@ function renderDrill() {
     <div class="prompt-card">
       <div class="label">${escapeHtml(deck.labels.prompt)} — ${d.idx + 1} of ${total}</div>
       <div class="prompt-text">${escapeHtml(card.prompt)}</div>
-      <button class="replay" data-act="hearPrompt">🔊 Hear it${card.promptLang && !card.promptLang.startsWith("fr") ? " (English)" : ""}</button>
+      <button class="replay" data-act="hearPrompt">🔊 Hear it</button>
     </div>
   `;
   wrap.querySelector("[data-act='hearPrompt']").addEventListener("click", () => speak(card.prompt, { lang: card.promptLang || "fr-FR" }));
   el.appendChild(wrap);
 
-  // Auto-play the prompt on entry (speak mode) — pronounced only after user has interacted.
-  if (mode === "speak") {
-    setTimeout(() => speak(card.prompt, { lang: card.promptLang || "fr-FR" }), 250);
-  }
-
   const answer = document.createElement("div");
   answer.className = "answer-area";
-
-  if (mode === "type" || (mode === "test" && !speechAvailable())) {
-    renderTypeArea(answer, card, deck);
-  } else if (mode === "speak") {
-    if (!speechAvailable()) {
-      const b = document.createElement("div");
-      b.className = "warning-banner";
-      b.textContent = "Speech recognition isn't available in this browser. Use Safari on iPhone, or Chrome on desktop. Falling back to typing.";
-      answer.appendChild(b);
-      renderTypeArea(answer, card, deck);
-    } else {
-      renderSpeakArea(answer, card, deck);
-    }
-  } else { // test mode with speech available → prefer speaking
-    if (speechAvailable()) renderSpeakArea(answer, card, deck);
-    else renderTypeArea(answer, card, deck);
-  }
-  el.appendChild(answer);
-  app.appendChild(el);
-}
-
-function speechAvailable() {
-  return !!(window.SpeechRecognition || window.webkitSpeechRecognition);
-}
-
-function renderTypeArea(host, card, deck) {
-  const label = deck.role === "ask" ? "Type the French question" : "Type the answer in French";
-  host.innerHTML = `
-    <label for="ans" style="color:var(--muted);font-size:13px;">${label}</label>
+  const areaLabel = deck.role === "ask" ? "Type the French question" : "Type the answer in French";
+  answer.innerHTML = `
+    <label for="ans" style="color:var(--muted);font-size:13px;">${areaLabel}</label>
     <textarea id="ans" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Tapez votre réponse..."></textarea>
+    <div class="dictation-hint">💡 On iPhone, tap the 🎤 microphone on the keyboard to dictate in French instead of typing.</div>
     <div class="action-row">
       <button class="primary" data-act="submit">Check</button>
       <button class="secondary" data-act="skip">Skip</button>
     </div>
   `;
-  const ta = host.querySelector("#ans");
+  const ta = answer.querySelector("#ans");
   setTimeout(() => ta.focus(), 50);
   ta.addEventListener("keydown", (e) => {
-    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") submitAnswer(ta.value);
+    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") submitTyped(ta.value);
   });
-  host.querySelector("[data-act='submit']").addEventListener("click", () => submitAnswer(ta.value));
-  host.querySelector("[data-act='skip']").addEventListener("click", () => submitAnswer(""));
+  answer.querySelector("[data-act='submit']").addEventListener("click", () => submitTyped(ta.value));
+  answer.querySelector("[data-act='skip']").addEventListener("click", () => submitTyped(""));
+  el.appendChild(answer);
+  app.appendChild(el);
 }
 
-function renderSpeakArea(host, card, deck) {
-  const lang = card.responseLang || "fr-FR";
-  host.innerHTML = `
-    <button class="mic-btn" data-act="mic">🎤 Tap to speak</button>
-    <div class="heard" id="heard">Your answer will appear here…</div>
-    <div class="action-row">
-      <button class="secondary" data-act="skip">Skip</button>
-    </div>
-  `;
-  const micBtn = host.querySelector("[data-act='mic']");
-  const heardEl = host.querySelector("#heard");
-  let recognition = null;
-  let listening = false;
-  let finalTranscript = "";
-  let interimTranscript = "";
-
-  micBtn.addEventListener("click", () => {
-    if (listening) { recognition?.stop(); return; }
-    recognition = getRecognition(lang);
-    if (!recognition) return;
-    finalTranscript = "";
-    interimTranscript = "";
-    heardEl.innerHTML = "<em>Listening…</em>";
-    listening = true;
-    micBtn.classList.add("listening");
-    micBtn.textContent = "⏹ Stop listening";
-    recognition.onresult = (ev) => {
-      interimTranscript = "";
-      for (let i = ev.resultIndex; i < ev.results.length; i++) {
-        const r = ev.results[i];
-        if (r.isFinal) finalTranscript += r[0].transcript + " ";
-        else interimTranscript += r[0].transcript;
-      }
-      heardEl.innerHTML = `<strong>${escapeHtml((finalTranscript + interimTranscript).trim() || "…")}</strong>`;
-    };
-    recognition.onerror = (ev) => {
-      heardEl.innerHTML = `<span style="color:var(--error)">Mic error: ${ev.error}. Try again or use Type mode.</span>`;
-      listening = false;
-      micBtn.classList.remove("listening");
-      micBtn.textContent = "🎤 Tap to speak";
-    };
-    recognition.onend = () => {
-      listening = false;
-      micBtn.classList.remove("listening");
-      micBtn.textContent = "🎤 Tap to speak";
-      const said = (finalTranscript + interimTranscript).trim();
-      if (said) submitAnswer(said);
-    };
-    try { recognition.start(); } catch (e) {
-      heardEl.innerHTML = `<span style="color:var(--error)">Couldn't start mic: ${e.message}</span>`;
-      listening = false;
-      micBtn.classList.remove("listening");
-      micBtn.textContent = "🎤 Tap to speak";
-    }
-  });
-  host.querySelector("[data-act='skip']").addEventListener("click", () => submitAnswer(""));
-}
-
-function submitAnswer(heard) {
+function submitTyped(typed) {
   const deck = currentDeck();
   const d = state.drill;
   const cardIdx = d.order[d.idx];
   const card = deck.cards[cardIdx];
-  const result = matchAnswer(heard || "", card.response);
-  d.answers.push({ cardIdx, heard, result });
-  if (d.mode === "test") advance();
-  else showFeedback(card, heard, result, deck);
+  const result = matchAnswer(typed || "", card.response);
+  d.answers.push({ cardIdx, heard: typed, result });
+  showFeedback(card, typed, result, deck);
 }
 
 function showFeedback(card, heard, result, deck) {
   const el = document.createElement("div");
-  const titles = { speak: "Speak drill", type: "Type mode", test: "Test run" };
-  el.appendChild(topHeader(titles[state.drill.mode], "deck"));
+  el.appendChild(topHeader("Type mode", "deck"));
   const wrap = document.createElement("div");
   wrap.className = "drill";
   const verdictLabel = { correct: "Perfect!", partial: "Nearly there", wrong: "Let's try again" };
@@ -597,7 +621,7 @@ function showFeedback(card, heard, result, deck) {
     <div class="diff">${diffHtml}</div>
     ${extrasHtml}
     <div class="expected">Expected: <b>${escapeHtml(card.response)}</b></div>
-    ${heard ? `<div class="expected">You said: <b>${escapeHtml(heard)}</b></div>` : `<div class="expected">You skipped this one.</div>`}
+    ${heard ? `<div class="expected">You typed: <b>${escapeHtml(heard)}</b></div>` : `<div class="expected">You skipped this one.</div>`}
   `;
   wrap.appendChild(fb);
   const row = document.createElement("div");
@@ -607,47 +631,59 @@ function showFeedback(card, heard, result, deck) {
     <button class="primary" data-act="next">${state.drill.idx + 1 === state.drill.order.length ? "Finish" : "Next →"}</button>
   `;
   row.querySelector("[data-act='hear']").addEventListener("click", () => speak(card.response, { lang: card.responseLang || "fr-FR" }));
-  row.querySelector("[data-act='next']").addEventListener("click", advance);
+  row.querySelector("[data-act='next']").addEventListener("click", () => {
+    const d = state.drill;
+    d.idx += 1;
+    if (d.idx >= d.order.length) { state.view = "results"; render(); }
+    else { state.view = d.mode; render(); }
+  });
   wrap.appendChild(row);
   el.appendChild(wrap);
   app.innerHTML = "";
   app.appendChild(el);
 }
 
-function advance() {
-  const d = state.drill;
-  d.idx += 1;
-  if (d.idx >= d.order.length) {
-    state.view = "results";
-    render();
-  } else {
-    state.view = d.mode;
-    render();
-  }
-}
-
 function renderResults() {
   const deck = currentDeck();
   const d = state.drill;
-  const correct = d.answers.filter(a => a.result.verdict === "correct").length;
-  const partial = d.answers.filter(a => a.result.verdict === "partial").length;
-  const wrong = d.answers.length - correct - partial;
-  const pct = Math.round((correct / d.answers.length) * 100);
+  const isReveal = d.mode === "practice" || d.mode === "test";
   const el = document.createElement("div");
   el.appendChild(topHeader("Results", "deck"));
   const results = document.createElement("div");
   results.className = "results";
-  results.innerHTML = `
-    <div class="score">${pct}%</div>
-    <p><b>${correct}</b> perfect · <b>${partial}</b> nearly · <b>${wrong}</b> to revisit</p>
-    <div class="action-row" style="max-width:360px; margin:24px auto;">
-      <button class="secondary" data-act="again">Try again</button>
-      <button class="primary" data-act="deck">Back to deck</button>
-    </div>
-  `;
+
+  let got, almost, no, pct;
+  if (isReveal) {
+    got = d.answers.filter(a => a.rating === "got").length;
+    almost = d.answers.filter(a => a.rating === "almost").length;
+    no = d.answers.filter(a => a.rating === "no").length;
+    pct = Math.round((got / d.answers.length) * 100);
+    results.innerHTML = `
+      <div class="score">${pct}%</div>
+      <p><b>${got}</b> got it · <b>${almost}</b> almost · <b>${no}</b> to revisit</p>
+      <div class="action-row" style="max-width:360px; margin:24px auto;">
+        <button class="secondary" data-act="again">Try again</button>
+        <button class="primary" data-act="deck">Back to deck</button>
+      </div>
+    `;
+  } else {
+    const correct = d.answers.filter(a => a.result.verdict === "correct").length;
+    const partial = d.answers.filter(a => a.result.verdict === "partial").length;
+    const wrong = d.answers.length - correct - partial;
+    pct = Math.round((correct / d.answers.length) * 100);
+    results.innerHTML = `
+      <div class="score">${pct}%</div>
+      <p><b>${correct}</b> perfect · <b>${partial}</b> nearly · <b>${wrong}</b> to revisit</p>
+      <div class="action-row" style="max-width:360px; margin:24px auto;">
+        <button class="secondary" data-act="again">Try again</button>
+        <button class="primary" data-act="deck">Back to deck</button>
+      </div>
+    `;
+  }
   results.querySelector("[data-act='again']").addEventListener("click", () => startDrill(d.mode));
   results.querySelector("[data-act='deck']").addEventListener("click", () => go("deck"));
   el.appendChild(results);
+
   const list = document.createElement("div");
   list.className = "learn-list";
   list.style.marginTop = "24px";
@@ -655,14 +691,20 @@ function renderResults() {
     const card = deck.cards[a.cardIdx];
     const item = document.createElement("div");
     item.className = "learn-item";
+    const rowLabel = isReveal
+      ? { got: "✅ got it", almost: "🤔 almost", no: "❌ to revisit" }[a.rating] || ""
+      : a.result.verdict;
+    const youSaid = !isReveal && a.heard
+      ? `<div class="a" style="margin-top:10px">You typed</div><div class="a-text" style="color:var(--muted)">${escapeHtml(a.heard)}</div>`
+      : "";
     item.innerHTML = `
-      <div class="q">${escapeHtml(deck.labels.prompt)} — ${a.result.verdict}</div>
+      <div class="q">${escapeHtml(deck.labels.prompt)} — ${rowLabel}</div>
       <div class="q-text">${escapeHtml(card.prompt)}</div>
-      <div class="a">Expected</div>
+      <div class="a">${escapeHtml(deck.labels.response)}</div>
       <div class="a-text">${escapeHtml(card.response)}</div>
-      ${a.heard ? `<div class="a" style="margin-top:10px">You said</div><div class="a-text" style="color:var(--muted)">${escapeHtml(a.heard)}</div>` : ""}
+      ${youSaid}
       <div class="row">
-        <button data-act="hear">🔊 Hear correct answer</button>
+        <button data-act="hear">🔊 Hear in French</button>
       </div>
     `;
     item.querySelector("[data-act='hear']").addEventListener("click", () => speak(card.response, { lang: card.responseLang || "fr-FR" }));
