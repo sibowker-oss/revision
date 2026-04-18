@@ -291,19 +291,12 @@ function renderHome() {
 function renderDeck() {
   const deck = currentDeck();
   if (!deck) { go("home"); return; }
-  const speechOk = !!(window.SpeechRecognition || window.webkitSpeechRecognition);
   const el = document.createElement("div");
   el.appendChild(topHeader(deck.title, "home"));
   const sub = document.createElement("div");
   sub.style.cssText = "text-align:center; color:var(--muted); font-size:14px; margin-bottom:20px;";
   sub.textContent = deck.subtitle || "";
   el.appendChild(sub);
-  if (!speechOk) {
-    const w = document.createElement("div");
-    w.className = "warning-banner";
-    w.textContent = "Speak mode needs Safari or Chrome. This browser doesn't support speech recognition — Type mode still works.";
-    el.appendChild(w);
-  }
   const grid = document.createElement("div");
   grid.className = "home-grid";
   const isAsk = deck.role === "ask";
