@@ -1,0 +1,81 @@
+{
+  "subject": "French",
+  "testTitle": "Monday — meeting someone in Paris",
+  "student": "Isla",
+  "decks": [
+    {
+      "id": "qc-answer",
+      "title": "Answer about Québec",
+      "subtitle": "Your partner asks — you answer in French",
+      "role": "answer",
+      "icon": "🇨🇦",
+      "labels": { "prompt": "Partner asks", "response": "Your answer" },
+      "cards": [
+        {
+          "prompt": "Comment est le temps au Québec ?",
+          "promptLang": "fr-FR",
+          "response": "À Montréal, au Québec, le temps est très chaud en été et très froid et nuageux en hiver.",
+          "responseLang": "fr-FR"
+        },
+        {
+          "prompt": "Comment est une journée d'école typique ?",
+          "promptLang": "fr-FR",
+          "response": "Les cours commencent à 8h30 et se terminent à 15h30. S'il fait trop chaud ou s'il neige, il n'y a pas école.",
+          "responseLang": "fr-FR"
+        },
+        {
+          "prompt": "Quelle est ta matière préférée et pourquoi ?",
+          "promptLang": "fr-FR",
+          "response": "Ma matière préférée à l'école est l'histoire, parce que j'aime apprendre ce qui s'est passé dans le passé. Je la trouve très amusante.",
+          "responseLang": "fr-FR"
+        },
+        {
+          "prompt": "Quelles langues parle-t-on au Québec ?",
+          "promptLang": "fr-FR",
+          "response": "Je parle français et anglais, mais la majorité des Québécois parlent plus français qu'anglais.",
+          "responseLang": "fr-FR"
+        }
+      ]
+    },
+    {
+      "id": "paris-ask",
+      "title": "Ask about Paris",
+      "subtitle": "You ask your partner about Paris in French",
+      "role": "ask",
+      "icon": "🇫🇷",
+      "labels": { "prompt": "Situation", "response": "Ask in French" },
+      "cards": [
+        {
+          "prompt": "Ask where they live in Paris.",
+          "promptLang": "en-GB",
+          "response": "Où habites-tu à Paris ?",
+          "responseLang": "fr-FR"
+        },
+        {
+          "prompt": "Ask what hobbies or sports they like to do.",
+          "promptLang": "en-GB",
+          "response": "Quels sont les loisirs ou les sports que tu aimes pratiquer ?",
+          "responseLang": "fr-FR"
+        },
+        {
+          "prompt": "Ask what their family looks like — pets, brothers or sisters.",
+          "promptLang": "en-GB",
+          "response": "À quoi ressemble votre famille ? Avez-vous des animaux de compagnie ou des frères et sœurs ?",
+          "responseLang": "fr-FR"
+        },
+        {
+          "prompt": "Ask what their favourite food in Paris is, and why they love it.",
+          "promptLang": "en-GB",
+          "response": "Quel est votre plat préféré à Paris et pourquoi l'aimez-vous ?",
+          "responseLang": "fr-FR"
+        },
+        {
+          "prompt": "Ask their birthday and how old they'll be this year.",
+          "promptLang": "en-GB",
+          "response": "Quelle est ta date d'anniversaire et quel âge auras-tu cette année ?",
+          "responseLang": "fr-FR"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+.DS_Store
+*.log
+.vscode/
+.idea/
+
+# Isla's source cue-card photos — kept locally, not published
+IMG_*.heic
+IMG_*.HEIC
+IMG_*.jpg
+IMG_*.JPG
+IMG_*.jpeg
+IMG_*.JPEG
